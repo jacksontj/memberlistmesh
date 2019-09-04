@@ -20,7 +20,6 @@ import (
 	"os"
 	"testing"
 
-	"github.com/go-kit/kit/log"
 	"github.com/hashicorp/memberlist"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -82,7 +81,6 @@ func newChannel(
 		send,
 		peers,
 		sendOversize,
-		log.NewNopLogger(),
 		make(chan struct{}),
 		prometheus.NewRegistry(),
 	)

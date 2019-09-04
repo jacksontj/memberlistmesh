@@ -3,8 +3,6 @@ module github.com/jacksontj/memberlistmesh
 go 1.12
 
 require (
-	github.com/go-kit/kit v0.9.0
-	github.com/go-stack/stack v1.8.0 // indirect
 	github.com/gogo/protobuf v1.3.0
 	github.com/hashicorp/go-sockaddr v1.0.2
 	github.com/hashicorp/memberlist v0.1.4
@@ -14,4 +12,5 @@ require (
 	github.com/pkg/errors v0.8.1
 	github.com/prometheus/client_golang v1.1.0
 	github.com/stretchr/testify v1.4.0
+	k8s.io/klog v0.3.1
 )

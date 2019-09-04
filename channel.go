@@ -17,12 +17,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-kit/kit/log"
-	"github.com/go-kit/kit/log/level"
 	"github.com/gogo/protobuf/proto"
 	"github.com/hashicorp/memberlist"
 	"github.com/jacksontj/memberlistmesh/clusterpb"
 	"github.com/prometheus/client_golang/prometheus"
+	"k8s.io/klog"
 )
 
 // Channel allows clients to send messages for a specific state type that will be
@@ -33,8 +32,7 @@ type Channel struct {
 	peers        func() []*memberlist.Node
 	sendOversize func(*memberlist.Node, []byte) error
 
-	msgc   chan []byte
-	logger log.Logger
+	msgc chan []byte
 
 	oversizeGossipMessageFailureTotal prometheus.Counter
 	oversizeGossipMessageDroppedTotal prometheus.Counter
@@ -49,7 +47,6 @@ func NewChannel(
 	send func([]byte),
 	peers func() []*memberlist.Node,
 	sendOversize func(*memberlist.Node, []byte) error,
-	logger log.Logger,
 	stopc chan struct{},
 	reg prometheus.Registerer,
 ) *Channel {
@@ -80,7 +77,6 @@ func NewChannel(
 		key:                               key,
 		send:                              send,
 		peers:                             peers,
-		logger:                            logger,
 		msgc:                              make(chan []byte, 200),
 		sendOversize:                      sendOversize,
 		oversizeGossipMessageFailureTotal: oversizeGossipMessageFailureTotal,
@@ -108,7 +104,7 @@ func (c *Channel) handleOverSizedMessages(stopc chan struct{}) {
 					c.oversizeGossipMessageSentTotal.Inc()
 					start := time.Now()
 					if err := c.sendOversize(n, b); err != nil {
-						level.Debug(c.logger).Log("msg", "failed to send reliable", "key", c.key, "node", n, "err", err)
+						klog.V(2).Infof("failed to send reliable key=%v node=%v, err=%v", c.key, n, err)
 						c.oversizeGossipMessageFailureTotal.Inc()
 						return
 					}
@@ -134,7 +130,7 @@ func (c *Channel) Broadcast(b []byte) {
 		select {
 		case c.msgc <- b:
 		default:
-			level.Debug(c.logger).Log("msg", "oversized gossip channel full")
+			klog.V(2).Infof("oversized gossip channel full")
 			c.oversizeGossipMessageDroppedTotal.Inc()
 		}
 	} else {

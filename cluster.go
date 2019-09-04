@@ -24,11 +24,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-kit/kit/log"
-	"github.com/go-kit/kit/log/level"
 	"github.com/hashicorp/memberlist"
 	"github.com/oklog/ulid"
 	"github.com/pkg/errors"
+	"k8s.io/klog"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -59,8 +58,6 @@ type Peer struct {
 	peerLeaveCounter           prometheus.Counter
 	peerUpdateCounter          prometheus.Counter
 	peerJoinCounter            prometheus.Counter
-
-	logger log.Logger
 }
 
 // peer is an internal type used for bookkeeping. It holds the state of peers
@@ -107,7 +104,6 @@ const (
 )
 
 func Create(
-	l log.Logger,
 	reg prometheus.Registerer,
 	bindAddr string,
 	advertiseAddr string,
@@ -146,19 +142,19 @@ func Create(
 	if err != nil {
 		return nil, errors.Wrap(err, "resolve peers")
 	}
-	level.Debug(l).Log("msg", "resolved peers to following addresses", "peers", strings.Join(resolvedPeers, ","))
+	klog.V(2).Infof("resolved peers to following addresses peers=%v", strings.Join(resolvedPeers, ","))
 
 	// Initial validation of user-specified advertise address.
 	addr, err := calculateAdvertiseAddress(bindHost, advertiseHost)
 	if err != nil {
-		level.Warn(l).Log("err", "couldn't deduce an advertise address: "+err.Error())
+		klog.Warningf("couldn't deduce an advertise address: " + err.Error())
 	} else if hasNonlocal(resolvedPeers) && isUnroutable(addr.String()) {
-		level.Warn(l).Log("err", "this node advertises itself on an unroutable address", "addr", addr.String())
-		level.Warn(l).Log("err", "this node will be unreachable in the cluster")
-		level.Warn(l).Log("err", "provide --cluster.advertise-address as a routable IP address or hostname")
+		klog.Warningf("this node advertises itself on an unroutable address addr=%v", addr.String())
+		klog.Warningf("this node will be unreachable in the cluster")
+		klog.Warningf("provide --cluster.advertise-address as a routable IP address or hostname")
 	} else if isAny(bindAddr) && advertiseHost == "" {
 		// memberlist doesn't advertise properly when the bind address is empty or unspecified.
-		level.Info(l).Log("msg", "setting advertise address explicitly", "addr", addr.String(), "port", bindPort)
+		klog.Infof("setting advertise address explicitly addr=%v port=%v", addr.String(), bindPort)
 		advertiseHost = addr.String()
 		advertisePort = bindPort
 	}
@@ -173,7 +169,6 @@ func Create(
 		states:        map[string]State{},
 		stopc:         make(chan struct{}),
 		readyc:        make(chan struct{}),
-		logger:        l,
 		peers:         map[string]peer{},
 		resolvedPeers: resolvedPeers,
 		knownPeers:    knownPeers,
@@ -185,7 +180,7 @@ func Create(
 	if retransmit < 3 {
 		retransmit = 3
 	}
-	p.delegate = newDelegate(l, reg, p, retransmit)
+	p.delegate = newDelegate(reg, p, retransmit)
 
 	cfg := memberlist.DefaultLANConfig()
 	cfg.Name = name.String()
@@ -200,7 +195,7 @@ func Create(
 	cfg.TCPTimeout = tcpTimeout
 	cfg.ProbeTimeout = probeTimeout
 	cfg.ProbeInterval = probeInterval
-	cfg.LogOutput = &logWriter{l: l}
+	cfg.LogOutput = &logWriter{}
 	cfg.GossipNodes = retransmit
 	cfg.UDPBufferSize = maxGossipPacketSize
 
@@ -225,12 +220,12 @@ func (p *Peer) Join(
 	reconnectTimeout time.Duration) error {
 	n, err := p.mlist.Join(p.resolvedPeers)
 	if err != nil {
-		level.Warn(p.logger).Log("msg", "failed to join cluster", "err", err)
+		klog.Warningf("failed to join cluster: %v", err)
 		if reconnectInterval != 0 {
-			level.Info(p.logger).Log("msg", fmt.Sprintf("will retry joining cluster every %v", reconnectInterval.String()))
+			klog.Infof("will retry joining cluster every %v", reconnectInterval.String())
 		}
 	} else {
-		level.Debug(p.logger).Log("msg", "joined cluster", "peers", n)
+		klog.V(2).Infof("joined cluster peers=%v", n)
 	}
 
 	if reconnectInterval != 0 {
@@ -336,12 +331,11 @@ func (p *Peer) setInitialFailed(peers []string, myAddr string) {
 	}
 }
 
-type logWriter struct {
-	l log.Logger
-}
+type logWriter struct{}
 
 func (l *logWriter) Write(b []byte) (int, error) {
-	return len(b), level.Debug(l.l).Log("memberlist", string(b))
+	klog.V(2).Infof("memberlist %s", string(b))
+	return len(b), nil
 }
 
 func (p *Peer) register(reg prometheus.Registerer, name string) {
@@ -423,7 +417,7 @@ func (p *Peer) removeFailedPeers(timeout time.Duration) {
 		if pr.leaveTime.Add(timeout).After(now) {
 			keep = append(keep, pr)
 		} else {
-			level.Debug(p.logger).Log("msg", "failed peer has timed out", "peer", pr.Node, "addr", pr.Address())
+			klog.V(2).Infof("failed peer has timed out peer=%v addr=%v", pr.Node, pr.Address())
 			delete(p.peers, pr.Name)
 		}
 	}
@@ -436,27 +430,25 @@ func (p *Peer) reconnect() {
 	failedPeers := p.failedPeers
 	p.peerLock.RUnlock()
 
-	logger := log.With(p.logger, "msg", "reconnect")
 	for _, pr := range failedPeers {
 		// No need to do book keeping on failedPeers here. If a
 		// reconnect is successful, they will be announced in
 		// peerJoin().
 		if _, err := p.mlist.Join([]string{pr.Address()}); err != nil {
 			p.failedReconnectionsCounter.Inc()
-			level.Debug(logger).Log("result", "failure", "peer", pr.Node, "addr", pr.Address())
+			klog.V(2).Infof("reconnect failure peer=%v addr=%v", pr.Node, pr.Address())
 		} else {
 			p.reconnectionsCounter.Inc()
-			level.Debug(logger).Log("result", "success", "peer", pr.Node, "addr", pr.Address())
+			klog.V(2).Infof("reconnect success peer=%v addr=%v", pr.Node, pr.Address())
 		}
 	}
 }
 
 func (p *Peer) refresh() {
-	logger := log.With(p.logger, "msg", "refresh")
 
 	resolvedPeers, err := resolvePeers(context.Background(), p.knownPeers, p.advertiseAddr, &net.Resolver{}, false)
 	if err != nil {
-		level.Debug(logger).Log("peers", p.knownPeers, "err", err)
+		klog.V(2).Infof("refresh peers=%v err=%v", p.knownPeers, err)
 		return
 	}
 
@@ -473,10 +465,10 @@ func (p *Peer) refresh() {
 		if !isPeerFound {
 			if _, err := p.mlist.Join([]string{peer}); err != nil {
 				p.failedRefreshCounter.Inc()
-				level.Warn(logger).Log("result", "failure", "addr", peer)
+				klog.V(2).Infof("refresh failure addr=%v", peer)
 			} else {
 				p.refreshCounter.Inc()
-				level.Debug(logger).Log("result", "success", "addr", peer)
+				klog.V(2).Infof("refresh success addr=%v", peer)
 			}
 		}
 	}
@@ -505,7 +497,7 @@ func (p *Peer) peerJoin(n *memberlist.Node) {
 	p.peerJoinCounter.Inc()
 
 	if oldStatus == StatusFailed {
-		level.Debug(p.logger).Log("msg", "peer rejoined", "peer", pr.Node)
+		klog.V(2).Infof("peer rejoined peer=%v", pr.Node)
 		p.failedPeers = removeOldPeer(p.failedPeers, pr.Address())
 	}
 }
@@ -527,7 +519,7 @@ func (p *Peer) peerLeave(n *memberlist.Node) {
 	p.peers[n.Address()] = pr
 
 	p.peerLeaveCounter.Inc()
-	level.Debug(p.logger).Log("msg", "peer left", "peer", pr.Node)
+	klog.V(2).Infof("peer left peer=%v", pr.Node)
 }
 
 func (p *Peer) peerUpdate(n *memberlist.Node) {
@@ -545,7 +537,7 @@ func (p *Peer) peerUpdate(n *memberlist.Node) {
 	p.peers[n.Address()] = pr
 
 	p.peerUpdateCounter.Inc()
-	level.Debug(p.logger).Log("msg", "peer updated", "peer", pr.Node)
+	klog.V(2).Infof("peer updated peer=%v", pr.Node)
 }
 
 // AddState adds a new state that will be gossiped. It returns a channel to which
@@ -568,13 +560,13 @@ func (p *Peer) AddState(key string, s State, reg prometheus.Registerer) *Channel
 	sendOversize := func(n *memberlist.Node, b []byte) error {
 		return p.mlist.SendReliable(n, b)
 	}
-	return NewChannel(key, send, peers, sendOversize, p.logger, p.stopc, reg)
+	return NewChannel(key, send, peers, sendOversize, p.stopc, reg)
 }
 
 // Leave the cluster, waiting up to timeout.
 func (p *Peer) Leave(timeout time.Duration) error {
 	close(p.stopc)
-	level.Debug(p.logger).Log("msg", "leaving cluster")
+	klog.V(2).Infof("leaving cluster")
 	return p.mlist.Leave(timeout)
 }
 
@@ -658,7 +650,7 @@ func (p *Peer) Position() int {
 // This is especially important for those that do not have persistent storage.
 func (p *Peer) Settle(ctx context.Context, interval time.Duration) {
 	const NumOkayRequired = 3
-	level.Info(p.logger).Log("msg", "Waiting for gossip to settle...", "interval", interval)
+	klog.Infof("Waiting for gossip to settle... interval=%v", interval)
 	start := time.Now()
 	nPeers := 0
 	nOkay := 0
@@ -667,7 +659,8 @@ func (p *Peer) Settle(ctx context.Context, interval time.Duration) {
 		select {
 		case <-ctx.Done():
 			elapsed := time.Since(start)
-			level.Info(p.logger).Log("msg", "gossip not settled but continuing anyway", "polls", totalPolls, "elapsed", elapsed)
+			klog.Infof("gossip not settled but continuing anyway polls=%v elapsed=%v", totalPolls, elapsed)
+
 			close(p.readyc)
 			return
 		case <-time.After(interval):
@@ -675,15 +668,15 @@ func (p *Peer) Settle(ctx context.Context, interval time.Duration) {
 		elapsed := time.Since(start)
 		n := len(p.Peers())
 		if nOkay >= NumOkayRequired {
-			level.Info(p.logger).Log("msg", "gossip settled; proceeding", "elapsed", elapsed)
+			klog.Infof("gossip settled; proceeding elapsed=%v", elapsed)
 			break
 		}
 		if n == nPeers {
 			nOkay++
-			level.Debug(p.logger).Log("msg", "gossip looks settled", "elapsed", elapsed)
+			klog.V(2).Infof("gossip looks settled elapsed=%v", elapsed)
 		} else {
 			nOkay = 0
-			level.Info(p.logger).Log("msg", "gossip not settled", "polls", totalPolls, "before", nPeers, "now", n, "elapsed", elapsed)
+			klog.V(2).Infof("gossip not settled polls=%v before=%v now=%v elapsed=%v", totalPolls, nPeers, n, elapsed)
 		}
 		nPeers = n
 		totalPolls++

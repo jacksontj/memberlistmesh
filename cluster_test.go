@@ -18,7 +18,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-kit/kit/log"
 	sockaddr "github.com/hashicorp/go-sockaddr"
 	"github.com/stretchr/testify/require"
 
@@ -38,9 +37,7 @@ func TestClusterJoinAndReconnect(t *testing.T) {
 }
 
 func testJoinLeave(t *testing.T) {
-	logger := log.NewNopLogger()
 	p, err := Create(
-		logger,
 		prometheus.NewRegistry(),
 		"0.0.0.0:0",
 		"",
@@ -67,7 +64,6 @@ func testJoinLeave(t *testing.T) {
 
 	// Create the peer who joins the first.
 	p2, err := Create(
-		logger,
 		prometheus.NewRegistry(),
 		"0.0.0.0:0",
 		"",
@@ -97,9 +93,7 @@ func testJoinLeave(t *testing.T) {
 }
 
 func testReconnect(t *testing.T) {
-	logger := log.NewNopLogger()
 	p, err := Create(
-		logger,
 		prometheus.NewRegistry(),
 		"0.0.0.0:0",
 		"",
@@ -122,7 +116,6 @@ func testReconnect(t *testing.T) {
 	p.WaitReady()
 
 	p2, err := Create(
-		logger,
 		prometheus.NewRegistry(),
 		"0.0.0.0:0",
 		"",
@@ -158,9 +151,7 @@ func testReconnect(t *testing.T) {
 }
 
 func testRemoveFailedPeers(t *testing.T) {
-	logger := log.NewNopLogger()
 	p, err := Create(
-		logger,
 		prometheus.NewRegistry(),
 		"0.0.0.0:0",
 		"",
@@ -205,11 +196,9 @@ func testRemoveFailedPeers(t *testing.T) {
 }
 
 func testInitiallyFailingPeers(t *testing.T) {
-	logger := log.NewNopLogger()
 	myAddr := "1.2.3.4:5000"
 	peerAddrs := []string{myAddr, "2.3.4.5:5000", "3.4.5.6:5000", "foo.example.com:5000"}
 	p, err := Create(
-		logger,
 		prometheus.NewRegistry(),
 		"0.0.0.0:0",
 		"",
